@@ -4,8 +4,11 @@ import test from 'node:test';
 import {
   buildPublishArgs,
   compareSemver,
+  createRedactor,
+  createSensitiveValues,
   createSyncPlan,
   encodePackageName,
+  formatSummary,
   isVersionAlreadyPublished,
   parseNpmViewMetadata,
   readConfig,
@@ -181,4 +184,44 @@ test('rewrites package manifest name to target package name', () => {
     type: 'git',
     url: 'https://github.com/acme/pkg.git'
   });
+});
+
+test('redacts source registry, source package, and token from logs', () => {
+  const redact = createRedactor(createSensitiveValues({
+    sourceRegistryUrl: 'https://gitlab.example.com/api/v4/projects/123/packages/npm/',
+    sourcePackageName: '@internal/pkg',
+    sourceRegistryToken: 'source-token'
+  }));
+
+  const output = redact(
+    'npm ERR! https://gitlab.example.com/api/v4/projects/123/packages/npm/ @internal/pkg @internal%2fpkg %40internal%2Fpkg source-token'
+  );
+
+  assert.equal(
+    output,
+    'npm ERR! <hidden source registry> <hidden source package> <hidden source package> <hidden source package> <hidden secret>'
+  );
+});
+
+test('summary hides source package name but keeps target package name', () => {
+  const summary = formatSummary({
+    sourcePackageName: '@internal/pkg',
+    targetPackageName: '@public/pkg',
+    sourceLatestVersion: '1.2.3',
+    npmjsLatestVersion: '(none)',
+    missingVersions: ['1.2.3'],
+    publishedHistoricalVersions: [],
+    publishedLatestVersion: null,
+    warnings: ['packed @internal/pkg from https://gitlab.example.com/npm/'],
+    errors: [],
+    redact: createRedactor(createSensitiveValues({
+      sourceRegistryUrl: 'https://gitlab.example.com/npm/',
+      sourcePackageName: '@internal/pkg'
+    }))
+  });
+
+  assert.doesNotMatch(summary, /@internal\/pkg/);
+  assert.doesNotMatch(summary, /gitlab\.example\.com/);
+  assert.match(summary, /<hidden source package>/);
+  assert.match(summary, /@public\/pkg/);
 });

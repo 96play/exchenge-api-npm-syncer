@@ -10,6 +10,9 @@ import { fileURLToPath } from 'node:url';
 const DEFAULT_TARGET_REGISTRY_URL = 'https://registry.npmjs.org';
 const DEFAULT_HISTORICAL_PUBLISH_TAG = 'sync';
 const DEFAULT_TARGET_ACCESS = 'public';
+const HIDDEN_SOURCE_PACKAGE = '<hidden source package>';
+const HIDDEN_SOURCE_REGISTRY = '<hidden source registry>';
+const HIDDEN_SECRET = '<hidden secret>';
 const PUBLISH_TOKEN_ENV_NAMES = [
   'NODE_AUTH_TOKEN',
   'NPM_TOKEN',
@@ -60,6 +63,7 @@ export function readConfig(env = process.env) {
 
 export async function runSync(env = process.env) {
   const config = readConfig(env);
+  registerGitHubMasks(createSensitiveValues(config));
   const result = createResult(config);
   const workRoot = await mkdtemp(path.join(tmpdir(), 'npm-registry-sync-'));
 
@@ -85,12 +89,12 @@ export async function runSync(env = process.env) {
     result.sourceLatestVersion = sourceDistTags.latest || null;
 
     if (!result.sourceLatestVersion) {
-      result.errors.push('Source registry does not have a latest dist-tag. Nothing was published.');
+      addError(result, 'Source registry does not have a latest dist-tag. Nothing was published.');
       return result;
     }
 
     if (!sourceVersions.includes(result.sourceLatestVersion)) {
-      result.errors.push(`Source latest dist-tag points to ${result.sourceLatestVersion}, but that version is not present in source versions.`);
+      addError(result, `Source latest dist-tag points to ${result.sourceLatestVersion}, but that version is not present in source versions.`);
       return result;
     }
 
@@ -120,10 +124,10 @@ export async function runSync(env = process.env) {
     result.missingVersions = plan.missingVersions;
     result.plannedHistoricalVersions = plan.historicalVersions;
     result.plannedLatestVersion = plan.latestVersion;
-    result.warnings.push(...plan.warnings);
+    addWarnings(result, plan.warnings);
 
     if (config.dryRun) {
-      result.warnings.push('DRY_RUN=true; no pack or publish commands were executed.');
+      addWarning(result, 'DRY_RUN=true; no pack or publish commands were executed.');
       return result;
     }
 
@@ -137,7 +141,7 @@ export async function runSync(env = process.env) {
           npmEnv
         });
         if (publishResult.alreadyExists) {
-          result.warnings.push(`Historical version ${version} already existed at publish time; treating it as success.`);
+          addWarning(result, `Historical version ${version} already existed at publish time; treating it as success.`);
         } else {
           result.publishedHistoricalVersions.push(version);
         }
@@ -147,9 +151,9 @@ export async function runSync(env = process.env) {
           : `Publishing historical version ${version} failed: ${error.message}`;
 
         if (error instanceof StageError && error.stage === 'pack') {
-          result.warnings.push(message);
+          addWarning(result, message);
         } else {
-          result.errors.push(message);
+          addError(result, message);
         }
       }
     }
@@ -164,7 +168,7 @@ export async function runSync(env = process.env) {
           npmEnv
         });
         if (publishResult.alreadyExists) {
-          result.warnings.push(`Latest version ${plan.latestVersion} already existed at publish time; treating it as success.`);
+          addWarning(result, `Latest version ${plan.latestVersion} already existed at publish time; treating it as success.`);
         } else {
           result.publishedLatestVersion = plan.latestVersion;
         }
@@ -172,7 +176,7 @@ export async function runSync(env = process.env) {
         const message = error instanceof StageError
           ? `${error.stage} failed for latest version ${plan.latestVersion}: ${error.message}`
           : `Publishing latest version ${plan.latestVersion} failed: ${error.message}`;
-        result.errors.push(message);
+        addError(result, message);
       }
     }
 
@@ -308,7 +312,19 @@ export function buildPublishArgs(tarballPath, targetRegistryUrl, tag, targetAcce
   ];
 }
 
+export function createRedactor(sensitiveValues = []) {
+  const replacements = buildRedactionReplacements(sensitiveValues);
+  return (value) => {
+    let text = String(value);
+    for (const { value: sensitiveValue, replacement } of replacements) {
+      text = text.split(sensitiveValue).join(replacement);
+    }
+    return text;
+  };
+}
+
 export function formatSummary(result) {
+  const redact = result.redact || ((value) => String(value));
   const lines = [
     '## npm registry sync summary',
     '',
@@ -323,14 +339,14 @@ export function formatSummary(result) {
     `- Errors: ${formatList(result.errors)}`
   ];
 
-  return `${lines.join('\n')}\n`;
+  return `${redact(lines.join('\n'))}\n`;
 }
 
 async function fetchMetadataOrRecord({ result, registryUrl, packageName, npmEnv, label, missingOk }) {
   try {
     return await fetchPackageMetadata(registryUrl, packageName, npmEnv, missingOk);
   } catch (error) {
-    result.errors.push(`Failed to read ${label} metadata: ${error.message}`);
+    addError(result, `Failed to read ${label} metadata: ${error.message}`);
     return null;
   }
 }
@@ -548,6 +564,7 @@ function createResult(config) {
     packageName: config.targetPackageName,
     sourcePackageName: config.sourcePackageName,
     targetPackageName: config.targetPackageName,
+    redact: createRedactor(createSensitiveValues(config)),
     dryRun: config.dryRun,
     sourceLatestVersion: null,
     npmjsLatestVersion: null,
@@ -559,6 +576,103 @@ function createResult(config) {
     warnings: [],
     errors: []
   };
+}
+
+export function createSensitiveValues({ sourceRegistryUrl, sourcePackageName, sourceRegistryToken }) {
+  const values = [];
+  addSensitiveValue(values, sourceRegistryToken, HIDDEN_SECRET);
+  addRegistrySensitiveValues(values, sourceRegistryUrl);
+  addPackageSensitiveValues(values, sourcePackageName);
+  return values;
+}
+
+function addSensitiveValue(values, value, replacement) {
+  if (typeof value !== 'string' || value.length === 0) {
+    return;
+  }
+  values.push({ value, replacement });
+}
+
+function addRegistrySensitiveValues(values, sourceRegistryUrl) {
+  if (typeof sourceRegistryUrl !== 'string' || sourceRegistryUrl.length === 0) {
+    return;
+  }
+
+  addSensitiveValue(values, sourceRegistryUrl, HIDDEN_SOURCE_REGISTRY);
+
+  try {
+    const normalized = normalizeRegistryUrl(sourceRegistryUrl);
+    addSensitiveValue(values, normalized, HIDDEN_SOURCE_REGISTRY);
+    addSensitiveValue(values, normalized.replace(/\/$/, ''), HIDDEN_SOURCE_REGISTRY);
+  } catch {
+    // Keep masking the raw value even when config validation reports the URL as invalid.
+  }
+}
+
+function addPackageSensitiveValues(values, sourcePackageName) {
+  if (typeof sourcePackageName !== 'string' || sourcePackageName.length === 0) {
+    return;
+  }
+
+  addSensitiveValue(values, sourcePackageName, HIDDEN_SOURCE_PACKAGE);
+
+  try {
+    addSensitiveValue(values, encodePackageName(sourcePackageName), HIDDEN_SOURCE_PACKAGE);
+  } catch {
+    // Keep masking the raw value even when package-name validation fails later.
+  }
+
+  addSensitiveValue(values, encodeURIComponent(sourcePackageName), HIDDEN_SOURCE_PACKAGE);
+}
+
+function buildRedactionReplacements(sensitiveValues) {
+  const seen = new Set();
+  return sensitiveValues
+    .filter(({ value }) => typeof value === 'string' && value.length > 0)
+    .filter(({ value }) => {
+      if (seen.has(value)) {
+        return false;
+      }
+      seen.add(value);
+      return true;
+    })
+    .sort((left, right) => right.value.length - left.value.length);
+}
+
+function registerGitHubMasks(sensitiveValues, env = process.env) {
+  if (!env.GITHUB_ACTIONS) {
+    return;
+  }
+
+  for (const { value } of buildRedactionReplacements(sensitiveValues)) {
+    process.stdout.write(`::add-mask::${escapeGitHubCommandValue(value)}\n`);
+  }
+}
+
+function escapeGitHubCommandValue(value) {
+  return value
+    .replace(/%/g, '%25')
+    .replace(/\r/g, '%0D')
+    .replace(/\n/g, '%0A');
+}
+
+function addWarnings(result, warnings) {
+  for (const warning of warnings) {
+    addWarning(result, warning);
+  }
+}
+
+function addWarning(result, warning) {
+  result.warnings.push(redactResultMessage(result, warning));
+}
+
+function addError(result, error) {
+  result.errors.push(redactResultMessage(result, error));
+}
+
+function redactResultMessage(result, message) {
+  const redact = result.redact || ((value) => String(value));
+  return redact(message);
 }
 
 function readVersions(metadata) {
@@ -725,6 +839,13 @@ export class StageError extends Error {
 }
 
 if (isMainModule()) {
+  const cliSensitiveValues = createSensitiveValues({
+    sourceRegistryUrl: process.env.SOURCE_REGISTRY_URL,
+    sourcePackageName: process.env.PACKAGE_NAME,
+    sourceRegistryToken: process.env.SOURCE_REGISTRY_TOKEN
+  });
+  registerGitHubMasks(cliSensitiveValues);
+
   let result = null;
   try {
     result = await runSync(process.env);
@@ -733,14 +854,16 @@ if (isMainModule()) {
       packageName: process.env.TARGET_PACKAGE_NAME || process.env.PACKAGE_NAME || null,
       sourcePackageName: process.env.PACKAGE_NAME || null,
       targetPackageName: process.env.TARGET_PACKAGE_NAME || process.env.PACKAGE_NAME || null,
+      redact: createRedactor(cliSensitiveValues),
       sourceLatestVersion: null,
       npmjsLatestVersion: null,
       missingVersions: [],
       publishedHistoricalVersions: [],
       publishedLatestVersion: null,
       warnings: [],
-      errors: [error.message]
+      errors: []
     };
+    addError(result, error.message);
   }
 
   const summary = formatSummary(result);

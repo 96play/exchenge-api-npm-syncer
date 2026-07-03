@@ -10,6 +10,7 @@
 - 从 npmjs 读取已发布 versions 和当前 dist-tags。
 - 元数据读取使用 `npm view ... --json --registry`，与 `npm pack` 复用同一个临时 `.npmrc`。
 - `PACKAGE_NAME` 是源 registry 上的包名；设置 `TARGET_PACKAGE_NAME` 后，npmjs 查重和发布都使用目标包名。
+- GitHub Actions 日志会隐藏源 registry URL、源包名和源 registry token。
 - 只发布源 registry 有、npmjs 没有的版本。
 - 历史版本按 semver 升序发布，并始终使用 `HISTORICAL_PUBLISH_TAG`，默认是 `sync`。
 - 源 registry 的 `latest` 指向版本最后发布，并使用 `--tag latest`。
@@ -73,6 +74,16 @@ auth key 会保留 registry path，不会退化成只有 host 的形式。脚本
 
 发布到 npmjs 时仍使用同一个临时 userconfig，但里面不会写入 npmjs token。子进程环境中也会移除常见 npm token 环境变量，避免 token fallback。
 
+## 日志脱敏
+
+脚本会在 GitHub Actions 中注册 mask，隐藏：
+
+- `SOURCE_REGISTRY_URL`
+- `PACKAGE_NAME`
+- `SOURCE_REGISTRY_TOKEN`
+
+脚本自己的 summary、warning 和 error 文本也会把这些值替换为占位符。设置 `TARGET_PACKAGE_NAME` 后，目标 npmjs 包名仍会正常显示；源包名不会显示。
+
 ## 每个版本的处理方式
 
 发布每个缺失版本前，脚本会：
@@ -108,7 +119,8 @@ npm run sync
 
 每次运行都会输出 summary，并写入 GitHub Actions step summary：
 
-- package name
+- source package name，占位显示
+- target package name
 - source latest version
 - npmjs latest version
 - missing versions
