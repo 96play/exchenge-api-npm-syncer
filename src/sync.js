@@ -23,10 +23,14 @@ const PUBLISH_TOKEN_ENV_NAMES = [
 ];
 
 export function readConfig(env = process.env) {
+  const sourcePackageName = required(env.PACKAGE_NAME, 'PACKAGE_NAME');
+  const targetPackageName = env.TARGET_PACKAGE_NAME || sourcePackageName;
   const config = {
     sourceRegistryUrl: required(env.SOURCE_REGISTRY_URL, 'SOURCE_REGISTRY_URL'),
     sourceRegistryToken: required(env.SOURCE_REGISTRY_TOKEN, 'SOURCE_REGISTRY_TOKEN'),
-    packageName: required(env.PACKAGE_NAME, 'PACKAGE_NAME'),
+    packageName: sourcePackageName,
+    sourcePackageName,
+    targetPackageName,
     targetRegistryUrl: env.TARGET_REGISTRY_URL || DEFAULT_TARGET_REGISTRY_URL,
     targetRepositoryUrl: required(env.TARGET_REPOSITORY_URL, 'TARGET_REPOSITORY_URL'),
     targetAccess: env.TARGET_ACCESS || DEFAULT_TARGET_ACCESS,
@@ -49,7 +53,8 @@ export function readConfig(env = process.env) {
     throw new Error('TARGET_ACCESS must be "public" or "restricted". npm uses "restricted" for private scoped packages.');
   }
 
-  validatePackageName(config.packageName);
+  validatePackageName(config.sourcePackageName, 'PACKAGE_NAME');
+  validatePackageName(config.targetPackageName, 'TARGET_PACKAGE_NAME');
   return config;
 }
 
@@ -66,7 +71,7 @@ export async function runSync(env = process.env) {
     const sourceMeta = await fetchMetadataOrRecord({
       result,
       registryUrl: config.sourceRegistryUrl,
-      packageName: config.packageName,
+      packageName: config.sourcePackageName,
       npmEnv,
       label: 'source registry',
       missingOk: false
@@ -92,7 +97,7 @@ export async function runSync(env = process.env) {
     const targetMeta = await fetchMetadataOrRecord({
       result,
       registryUrl: config.targetRegistryUrl,
-      packageName: config.packageName,
+      packageName: config.targetPackageName,
       npmEnv,
       label: 'target registry',
       missingOk: true
@@ -307,7 +312,8 @@ export function formatSummary(result) {
   const lines = [
     '## npm registry sync summary',
     '',
-    `- Package name: ${result.packageName || '(unknown)'}`,
+    `- Source package name: ${result.sourcePackageName || result.packageName || '(unknown)'}`,
+    `- Target package name: ${result.targetPackageName || result.packageName || '(unknown)'}`,
     `- Source latest version: ${result.sourceLatestVersion || '(none)'}`,
     `- npmjs latest version: ${result.npmjsLatestVersion || '(none)'}`,
     `- Missing versions: ${formatList(result.missingVersions)}`,
@@ -361,7 +367,7 @@ async function publishVersion({ config, version, tag, workRoot, npmEnv }) {
   await mkdir(outDir, { recursive: true });
 
   const sourceTarball = await packFromSource({
-    packageName: config.packageName,
+    packageName: config.sourcePackageName,
     version,
     sourceRegistryUrl: config.sourceRegistryUrl,
     packDir,
@@ -371,12 +377,13 @@ async function publishVersion({ config, version, tag, workRoot, npmEnv }) {
   await runStageCommand('unpack', 'tar', ['-xzf', sourceTarball, '-C', unpackDir], { env: npmEnv });
   await rewritePackageJson({
     packageJsonPath: path.join(unpackDir, 'package', 'package.json'),
-    expectedName: config.packageName,
+    expectedSourceName: config.sourcePackageName,
+    targetPackageName: config.targetPackageName,
     expectedVersion: version,
     targetRepositoryUrl: config.targetRepositoryUrl
   });
 
-  const repackedTarball = path.join(outDir, `${sanitizePathSegment(config.packageName)}-${sanitizePathSegment(version)}.tgz`);
+  const repackedTarball = path.join(outDir, `${sanitizePathSegment(config.targetPackageName)}-${sanitizePathSegment(version)}.tgz`);
   await runStageCommand('repack', 'tar', ['-czf', repackedTarball, '-C', unpackDir, 'package'], { env: npmEnv });
 
   const publishArgs = buildPublishArgs(repackedTarball, config.targetRegistryUrl, tag, config.targetAccess);
@@ -411,12 +418,9 @@ async function packFromSource({ packageName, version, sourceRegistryUrl, packDir
   return resolvePackedTarball(result.stdout, packDir);
 }
 
-async function rewritePackageJson({ packageJsonPath, expectedName, expectedVersion, targetRepositoryUrl }) {
-  const raw = await readFile(packageJsonPath, 'utf8');
-  const packageJson = JSON.parse(raw);
-
-  if (packageJson.name !== expectedName) {
-    throw new StageError('rewrite package.json', `Packed package name ${packageJson.name} did not match expected ${expectedName}.`);
+export function rewritePackageManifest({ packageJson, expectedSourceName, targetPackageName, expectedVersion, targetRepositoryUrl }) {
+  if (packageJson.name !== expectedSourceName) {
+    throw new StageError('rewrite package.json', `Packed package name ${packageJson.name} did not match expected source package ${expectedSourceName}.`);
   }
   if (packageJson.version !== expectedVersion) {
     throw new StageError('rewrite package.json', `Packed package version ${packageJson.version} did not match expected ${expectedVersion}.`);
@@ -426,13 +430,30 @@ async function rewritePackageJson({ packageJsonPath, expectedName, expectedVersi
     ? packageJson.repository
     : {};
 
-  packageJson.repository = {
-    ...existingRepository,
-    type: 'git',
-    url: targetRepositoryUrl
+  return {
+    ...packageJson,
+    name: targetPackageName,
+    repository: {
+      ...existingRepository,
+      type: 'git',
+      url: targetRepositoryUrl
+    }
   };
+}
 
-  await writeFile(packageJsonPath, `${JSON.stringify(packageJson, null, 2)}\n`);
+async function rewritePackageJson({ packageJsonPath, expectedSourceName, targetPackageName, expectedVersion, targetRepositoryUrl }) {
+  const raw = await readFile(packageJsonPath, 'utf8');
+  const packageJson = JSON.parse(raw);
+
+  const rewrittenPackageJson = rewritePackageManifest({
+    packageJson,
+    expectedSourceName,
+    targetPackageName,
+    expectedVersion,
+    targetRepositoryUrl
+  });
+
+  await writeFile(packageJsonPath, `${JSON.stringify(rewrittenPackageJson, null, 2)}\n`);
 }
 
 async function resolvePackedTarball(stdout, packDir) {
@@ -524,7 +545,9 @@ function buildNpmEnv(npmrcPath, env) {
 
 function createResult(config) {
   return {
-    packageName: config.packageName,
+    packageName: config.targetPackageName,
+    sourcePackageName: config.sourcePackageName,
+    targetPackageName: config.targetPackageName,
     dryRun: config.dryRun,
     sourceLatestVersion: null,
     npmjsLatestVersion: null,
@@ -642,17 +665,17 @@ function parseBoolean(value, name) {
   throw new Error(`${name} must be true or false.`);
 }
 
-function validatePackageName(packageName) {
+function validatePackageName(packageName, name) {
   if (packageName.startsWith('@')) {
     const parts = packageName.split('/');
     if (parts.length !== 2 || !parts[0].slice(1) || !parts[1]) {
-      throw new Error(`PACKAGE_NAME is not a valid scoped package name: ${packageName}`);
+      throw new Error(`${name} is not a valid scoped package name: ${packageName}`);
     }
     return;
   }
 
   if (!packageName || packageName.includes('/')) {
-    throw new Error(`PACKAGE_NAME is not a valid package name: ${packageName}`);
+    throw new Error(`${name} is not a valid package name: ${packageName}`);
   }
 }
 
@@ -707,7 +730,9 @@ if (isMainModule()) {
     result = await runSync(process.env);
   } catch (error) {
     result = {
-      packageName: process.env.PACKAGE_NAME || null,
+      packageName: process.env.TARGET_PACKAGE_NAME || process.env.PACKAGE_NAME || null,
+      sourcePackageName: process.env.PACKAGE_NAME || null,
+      targetPackageName: process.env.TARGET_PACKAGE_NAME || process.env.PACKAGE_NAME || null,
       sourceLatestVersion: null,
       npmjsLatestVersion: null,
       missingVersions: [],

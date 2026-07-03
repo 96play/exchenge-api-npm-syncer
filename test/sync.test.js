@@ -9,6 +9,7 @@ import {
   isVersionAlreadyPublished,
   parseNpmViewMetadata,
   readConfig,
+  rewritePackageManifest,
   sourceAuthKeyForRegistry
 } from '../src/sync.js';
 
@@ -86,6 +87,8 @@ test('configuration defaults are applied and latest is rejected as historical ta
   assert.equal(readConfig(env).targetRegistryUrl, 'https://registry.npmjs.org/');
   assert.equal(readConfig(env).historicalPublishTag, 'sync');
   assert.equal(readConfig(env).targetAccess, 'public');
+  assert.equal(readConfig(env).sourcePackageName, '@scope/pkg');
+  assert.equal(readConfig(env).targetPackageName, '@scope/pkg');
 
   assert.throws(
     () => readConfig({ ...env, HISTORICAL_PUBLISH_TAG: 'latest' }),
@@ -93,6 +96,7 @@ test('configuration defaults are applied and latest is rejected as historical ta
   );
 
   assert.equal(readConfig({ ...env, TARGET_ACCESS: 'restricted' }).targetAccess, 'restricted');
+  assert.equal(readConfig({ ...env, TARGET_PACKAGE_NAME: '@public/pkg' }).targetPackageName, '@public/pkg');
   assert.throws(
     () => readConfig({ ...env, TARGET_ACCESS: 'private' }),
     /TARGET_ACCESS must be "public" or "restricted"/
@@ -151,4 +155,30 @@ test('publish args can request restricted package access', () => {
       'restricted'
     ]
   );
+});
+
+test('rewrites package manifest name to target package name', () => {
+  const rewritten = rewritePackageManifest({
+    packageJson: {
+      name: '@internal/pkg',
+      version: '1.2.3',
+      repository: {
+        directory: 'packages/pkg'
+      },
+      main: 'index.js'
+    },
+    expectedSourceName: '@internal/pkg',
+    targetPackageName: '@public/pkg',
+    expectedVersion: '1.2.3',
+    targetRepositoryUrl: 'https://github.com/acme/pkg.git'
+  });
+
+  assert.equal(rewritten.name, '@public/pkg');
+  assert.equal(rewritten.version, '1.2.3');
+  assert.equal(rewritten.main, 'index.js');
+  assert.deepEqual(rewritten.repository, {
+    directory: 'packages/pkg',
+    type: 'git',
+    url: 'https://github.com/acme/pkg.git'
+  });
 });
