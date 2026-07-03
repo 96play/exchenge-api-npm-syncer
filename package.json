@@ -1,0 +1,19 @@
+{
+  "name": "npm-registry-trusted-sync",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Synchronize one package from a private npm-compatible registry to npmjs using npm Trusted Publishing.",
+  "type": "module",
+  "bin": {
+    "npm-registry-trusted-sync": "./src/sync.js"
+  },
+  "scripts": {
+    "sync": "node ./src/sync.js",
+    "test": "node --test",
+    "check": "node --check ./src/sync.js"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "license": "MIT"
+}

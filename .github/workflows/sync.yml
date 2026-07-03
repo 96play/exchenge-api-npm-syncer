@@ -1,0 +1,50 @@
+name: Sync npm package
+
+on:
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Plan only; do not pack or publish'
+        required: true
+        type: choice
+        default: 'false'
+        options:
+          - 'false'
+          - 'true'
+  schedule:
+    - cron: '17 * * * *'
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  sync:
+    name: Sync package to npmjs
+    runs-on: ubuntu-latest
+    env:
+      SOURCE_REGISTRY_URL: ${{ vars.SOURCE_REGISTRY_URL }}
+      PACKAGE_NAME: ${{ vars.PACKAGE_NAME }}
+      TARGET_REGISTRY_URL: ${{ vars.TARGET_REGISTRY_URL || 'https://registry.npmjs.org' }}
+      TARGET_REPOSITORY_URL: ${{ vars.TARGET_REPOSITORY_URL }}
+      TARGET_ACCESS: ${{ vars.TARGET_ACCESS || 'public' }}
+      HISTORICAL_PUBLISH_TAG: ${{ vars.HISTORICAL_PUBLISH_TAG || 'sync' }}
+      DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run || vars.DRY_RUN || 'false' }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+          package-manager-cache: false
+
+      - name: Install sync tool
+        run: npm ci
+
+      - name: Sync package
+        env:
+          SOURCE_REGISTRY_TOKEN: ${{ secrets.SOURCE_REGISTRY_TOKEN }}
+        run: npm run sync
