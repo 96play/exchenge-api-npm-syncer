@@ -23,8 +23,6 @@ jobs:
     name: Sync package to npmjs
     runs-on: ubuntu-latest
     env:
-      SOURCE_REGISTRY_URL: ${{ vars.SOURCE_REGISTRY_URL }}
-      PACKAGE_NAME: ${{ vars.PACKAGE_NAME }}
       TARGET_PACKAGE_NAME: ${{ vars.TARGET_PACKAGE_NAME }}
       TARGET_REGISTRY_URL: ${{ vars.TARGET_REGISTRY_URL || 'https://registry.npmjs.org' }}
       TARGET_REPOSITORY_URL: ${{ vars.TARGET_REPOSITORY_URL }}
@@ -47,5 +45,7 @@ jobs:
 
       - name: Sync package
         env:
+          SOURCE_REGISTRY_URL: ${{ secrets.SOURCE_REGISTRY_URL }}
           SOURCE_REGISTRY_TOKEN: ${{ secrets.SOURCE_REGISTRY_TOKEN }}
+          PACKAGE_NAME: ${{ secrets.PACKAGE_NAME }}
         run: npm run sync
